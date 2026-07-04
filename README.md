@@ -1,5 +1,7 @@
 # Limit Order Book & Matching Engine (C++20)
 
+[![CI](https://github.com/jeffreyl1234/orderBook/actions/workflows/ci.yml/badge.svg)](https://github.com/jeffreyl1234/orderBook/actions/workflows/ci.yml)
+
 A single-threaded limit order book with a price-time-priority matching engine, a
 NASDAQ TotalView-ITCH 5.0 replay parser, a latency benchmark harness, and a
 self-contained unit-test suite. No external dependencies; CMake build.
