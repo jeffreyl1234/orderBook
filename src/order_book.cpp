@@ -1,6 +1,7 @@
 #include "ob/order_book.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <utility>
 
 namespace ob {

@@ -1,6 +1,7 @@
 #include "ob/itch_parser.hpp"
 
 #include <array>
+#include <utility>
 #include <vector>
 
 namespace ob {

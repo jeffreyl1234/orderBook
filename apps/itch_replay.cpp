@@ -1,6 +1,7 @@
 #include "ob/itch_parser.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
