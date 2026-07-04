@@ -13,6 +13,7 @@ endif()
 # --- Core library -----------------------------------------------------------
 add_library(ob STATIC
   src/order_book.cpp
+  src/flat_order_book.cpp
   src/itch_parser.cpp)
 target_include_directories(ob PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(ob PRIVATE -Wall -Wextra -Wpedantic)
@@ -22,6 +23,7 @@ enable_testing()
 add_executable(ob_tests
   tests/main.cpp
   tests/test_matching.cpp
+  tests/test_flat.cpp
   tests/test_itch.cpp)
 target_link_libraries(ob_tests PRIVATE ob)
 target_include_directories(ob_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)

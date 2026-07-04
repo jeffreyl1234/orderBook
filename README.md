@@ -6,9 +6,14 @@ A single-threaded limit order book with a price-time-priority matching engine, a
 NASDAQ TotalView-ITCH 5.0 replay parser, a latency benchmark harness, and a
 self-contained unit-test suite. No external dependencies; CMake build.
 
-This is **v1: the simplest correct design** (`std::map` of price levels + FIFO
-queues). It is deliberately structured so the cache-friendly flat-array layout
-(v2) is a drop-in replacement behind the same API, letting us A/B the benchmarks.
+Two matching-engine implementations behind one API:
+
+- **v1 (`OrderBook`)** — the simplest correct design: `std::map` of price levels +
+  `std::list` FIFO queues. General-purpose; drives the multi-symbol ITCH replay.
+- **v2 (`FlatOrderBook`)** — a cache-friendly rewrite: flat price-indexed level
+  arrays + a contiguous order arena with an intrusive free list. Same public API,
+  so the benchmark drives both with an identical operation stream. **v2 is
+  ~1.5–2.5× faster** on add/cancel/execute (numbers below).
 
 ## Build & run
 
@@ -36,9 +41,11 @@ include/ob/  types.hpp      OrderId/Price/Quantity/Side/Trade
              order_book.hpp OrderBook: matching + passive primitives
              itch_parser.hpp ItchReplayer
              timing.hpp     portable cycle/time source
-src/         order_book.cpp itch_parser.cpp
-tests/       test_framework.hpp (tiny) + test_matching.cpp + test_itch.cpp
-bench/       bench_latency.cpp
+             flat_order_book.hpp FlatOrderBook (v2, cache-friendly)
+src/         order_book.cpp flat_order_book.cpp itch_parser.cpp
+tests/       test_framework.hpp (tiny) + test_matching.cpp
+             + test_flat.cpp + test_itch.cpp
+bench/       bench_latency.cpp   (v1 vs v2 head-to-head)
 apps/        itch_replay.cpp
 ```
 
@@ -110,30 +117,61 @@ harness measures and prints. For sub-100 ns operations the per-op `p50` is
 therefore quantized (you'll see a `min` of 0); the `mean` column is the more
 trustworthy signal at that scale. The x86 `rdtsc` path is wired up in `timing.hpp`
 for when this runs on an Intel box; batch-timing throughput is the natural next
-addition. Representative run (`./ob_bench 100000`, Apple M-series, `-O3`):
+addition. Both `add` scenarios warm the arena/allocator first so the timed region
+measures steady state (a real engine pre-allocates and never grows in the hot
+path), not first-touch page faults.
+
+## v2: cache-friendly flat book, and how it wins
+
+`FlatOrderBook` keeps v1's exact semantics (all 41 tests pass against both) but
+changes the layout to attack the three costs of the map+list design:
+
+| Cost in v1 | v2 fix |
+|---|---|
+| `std::map` tree descent per level access, O(log L) | flat array indexed by `(price-min)/tick`, **O(1)** |
+| `malloc`/`free` per order, nodes scattered on the heap | contiguous **arena** (`std::vector<Node>`) + intrusive free list, no per-order alloc |
+| pointer-chasing the level's `std::list` | FIFO threaded through the arena by 32-bit indices — compact, cache-resident |
+| `map::begin()` for best price | tracked `best_bid_idx_`/`best_ask_idx_`, O(1) update, bounded rescan only when the top empties |
+
+**The tradeoff (and why v1 stays):** a flat array must preallocate the whole
+`[min,max]` price range, so v2 fits a single instrument in a bounded intraday band,
+not 8,000 symbols at wildly different prices — which is exactly the multi-symbol
+job v1 still does for ITCH replay. `find_order`'s returned pointer is also only
+valid until the next mutating call (the arena may reallocate), a weaker guarantee
+than v1's stable list iterators — the documented price of contiguity.
+
+### Head-to-head (`./ob_bench 300000`, Apple M-series, `-O3`, 8192-tick band)
 
 ```
-scenario           count   min   mean   p50   p99  p999    max   (ns)
-add               100000     0  199.1    83   750 13625   ...   pure resting insert
-cancel            100000    41  751.8   584  2584 15875   ...   index lookup + level teardown
-execute           100000    83  322.3   208   959 14083   ...   one fill per aggressor
-clock overhead p50: 41 ns
+scenario   impl      p50      p99     p999    mean    (ns)
+add        v1         83      208     2375   101.4
+add        v2         42       84     1542    63.0     ~2.0x p50, ~2.5x p99
+cancel     v1        708     2625    10458   868.0
+cancel     v2        375     1500     4542   461.7     ~1.9x p50
+execute    v1        125      417     3583   188.9
+execute    v2         83      208     1542    91.6     ~1.5x p50, ~2.0x p99
 ```
+
+v2 is faster on every operation at every percentile. Its `add` p50 (42 ns) sits at
+the clock floor (41 ns) — the operation is now faster than `steady_clock` can
+resolve, which is itself the argument for the batch-timing / `rdtsc`-on-x86 next
+step.
 
 ## Tests
 
-28 cases / 100+ assertions via a ~100-line header-only framework (zero third-party
+41 cases / 1300+ assertions via a ~100-line header-only framework (zero third-party
 deps; swapping in Catch2/doctest is mechanical). Coverage includes the edge cases
 that matter: partial fills (both directions), crossing at the maker's price,
 multi-level sweeps, FIFO vs price priority, market orders with insufficient
 liquidity, empty-level teardown, cancel of unknown ids, all three modify paths,
-and ITCH add/execute/cancel/delete/replace decoded from hand-built big-endian
-message buffers.
+ITCH add/execute/cancel/delete/replace decoded from hand-built big-endian message
+buffers, and the full matching suite re-run against `FlatOrderBook` plus an
+arena free-list churn test.
 
-## Roadmap (v2)
+## Roadmap (v3)
 
-1. Flat-array price levels indexed by `(price - base) / tick` for O(1) level
-   access and contiguous iteration; intrusive freelist for orders (no per-order
-   `malloc`).
-2. Benchmark v1 vs v2 head-to-head with the same harness.
-3. Batch-timing throughput numbers to complement the quantized per-op latencies.
+1. Batch-timing throughput numbers + `rdtsc` on x86 to get under the clock floor.
+2. Hierarchical bitmap over the flat levels for O(1) best-price find (removes the
+   bounded rescan) and a sparse fallback for the price tails.
+3. Multi-symbol sharding: one book (or arena) per core with a lock-free ingress
+   queue — the realistic path past a single-threaded serialization point.
